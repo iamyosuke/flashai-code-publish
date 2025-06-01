@@ -1,0 +1,240 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/**'
+      - 'terraform/**'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+env:
+  AWS_REGION: ap-northeast-1
+  ECR_REPOSITORY: ai-flashcards-backend
+  ECS_CLUSTER: ai-flashcards-cluster
+  CONTAINER_NAME: ai-flashcards-backend
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v4
+        with:
+          go-version: '1.23'
+
+      - name: Configure AWS credentials
+        timeout-minutes: 5
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::867344434650:role/github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+          audience: sts.amazonaws.com
+
+      - name: Login to Amazon ECR
+        timeout-minutes: 5
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # - name: Test
+      #   timeout-minutes: 5
+      #   working-directory: ./backend
+      #   run: go test -v ./...
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Calculate Docker image hash
+        id: hash
+        run: |
+          HASH=$(find backend -type f -exec sha256sum {} \; | sort | sha256sum | cut -d' ' -f1)
+          PREV_HASH=$(aws ecr describe-images --repository-name $ECR_REPOSITORY --image-ids imageTag=latest --query 'imageDetails[0].imageTags[?@!=`latest`]' --output text || echo "none")
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "cache_hit=$([[ "$PREV_HASH" == "$HASH" ]] && echo "true" || echo "false")" >> $GITHUB_OUTPUT
+
+      - name: Build and push image to Amazon ECR
+        if: steps.hash.outputs.cache_hit != 'true'
+        uses: docker/build-push-action@v5
+        timeout-minutes: 10
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        with:
+          context: ./backend
+          file: docker/backend/Dockerfile
+          push: true
+          build-args: |
+            VERSION=${{ github.sha }}
+            GIT_COMMIT=${{ github.sha }}
+            BUILD_TIME=${{ github.event.head_commit.timestamp }}
+            COMMIT_MESSAGE=${{ github.event.head_commit.message }}
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:buildcache
+          cache-to: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:buildcache,mode=max
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            com.github.repository=${{ github.repository }}
+            com.github.sha=${{ github.sha }}
+            com.github.contenthash=${{ steps.hash.outputs.hash }}
+
+      - name: Tag existing image
+        if: steps.hash.outputs.cache_hit == 'true'
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        run: |
+          # Get the image manifest properly formatted
+          MANIFEST=$(aws ecr batch-get-image --repository-name $ECR_REPOSITORY --image-ids imageTag=latest --query 'images[0].imageManifest' --output text)
+          # Put the image with new tag
+          aws ecr put-image --repository-name $ECR_REPOSITORY --image-tag ${{ github.sha }} --image-manifest "$MANIFEST"
+
+      - name: Terraform Setup
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.5.0"
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        timeout-minutes: 5
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Check if parameters exist in Parameter Store
+        id: check-params
+        run: |
+          # Parameter Storeに必要なパラメータが存在するかチェック
+          PARAMS_EXIST=true
+          
+          REQUIRED_PARAMS=(
+            "/ai-flashcards/production/CLERK_SECRET_KEY"
+            "/ai-flashcards/production/CLERK_WEBHOOK_SECRET"
+            "/ai-flashcards/production/DATABASE_PASSWORD"
+            "/ai-flashcards/production/GEMINI_API_KEY"
+            "/ai-flashcards/production/STRIPE_SECRET_KEY"
+            "/ai-flashcards/production/STRIPE_PUBLISHABLE_KEY"
+            "/ai-flashcards/production/STRIPE_WEBHOOK_SECRET"
+          )
+          
+          for param in "${REQUIRED_PARAMS[@]}"; do
+            if ! aws ssm get-parameter --name "$param" --with-decryption >/dev/null 2>&1; then
+              echo "Parameter $param does not exist"
+              PARAMS_EXIST=false
+            fi
+          done
+          
+          echo "params_exist=$PARAMS_EXIST" >> $GITHUB_OUTPUT
+
+      - name: Create terraform.tfvars from Parameter Store
+        if: steps.check-params.outputs.params_exist == 'true'
+        working-directory: ./terraform
+        run: |
+          # Parameter Storeから値を取得してterraform.tfvarsを作成
+          CLERK_SECRET_KEY=$(aws ssm get-parameter --name "/ai-flashcards/production/CLERK_SECRET_KEY" --with-decryption --query 'Parameter.Value' --output text)
+          CLERK_WEBHOOK_SECRET=$(aws ssm get-parameter --name "/ai-flashcards/production/CLERK_WEBHOOK_SECRET" --with-decryption --query 'Parameter.Value' --output text)
+          DATABASE_PASSWORD=$(aws ssm get-parameter --name "/ai-flashcards/production/DATABASE_PASSWORD" --with-decryption --query 'Parameter.Value' --output text)
+          GEMINI_API_KEY=$(aws ssm get-parameter --name "/ai-flashcards/production/GEMINI_API_KEY" --with-decryption --query 'Parameter.Value' --output text)
+          STRIPE_SECRET_KEY=$(aws ssm get-parameter --name "/ai-flashcards/production/STRIPE_SECRET_KEY" --with-decryption --query 'Parameter.Value' --output text)
+          STRIPE_PUBLISHABLE_KEY=$(aws ssm get-parameter --name "/ai-flashcards/production/STRIPE_PUBLISHABLE_KEY" --with-decryption --query 'Parameter.Value' --output text)
+          STRIPE_WEBHOOK_SECRET=$(aws ssm get-parameter --name "/ai-flashcards/production/STRIPE_WEBHOOK_SECRET" --with-decryption --query 'Parameter.Value' --output text)
+          
+          cat > terraform.tfvars << EOF
+          clerk_secret_key     = "$CLERK_SECRET_KEY"
+          clerk_webhook_secret = "$CLERK_WEBHOOK_SECRET"
+          database_password    = "$DATABASE_PASSWORD"
+          gemini_api_key      = "$GEMINI_API_KEY"
+          stripe_secret_key   = "$STRIPE_SECRET_KEY"
+          stripe_publishable_key = "$STRIPE_PUBLISHABLE_KEY"
+          stripe_webhook_secret = "$STRIPE_WEBHOOK_SECRET"
+          EOF
+
+      - name: Show parameter setup instructions
+        if: steps.check-params.outputs.params_exist == 'false'
+        run: |
+          echo "❌ Required parameters not found in Parameter Store"
+          echo ""
+          echo "Please set up the parameters manually using AWS CLI:"
+          echo ""
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/CLERK_SECRET_KEY' --value 'your-clerk-secret-key' --type 'SecureString'"
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/CLERK_WEBHOOK_SECRET' --value 'your-clerk-webhook-secret' --type 'SecureString'"
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/DATABASE_PASSWORD' --value 'your-database-password' --type 'SecureString'"
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/GEMINI_API_KEY' --value 'your-gemini-api-key' --type 'SecureString'"
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/STRIPE_SECRET_KEY' --value 'your-stripe-secret-key' --type 'SecureString'"
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/STRIPE_PUBLISHABLE_KEY' --value 'your-stripe-publishable-key' --type 'String'"
+          echo "aws ssm put-parameter --name '/ai-flashcards/production/STRIPE_WEBHOOK_SECRET' --value 'your-stripe-webhook-secret' --type 'SecureString'"
+          echo ""
+          echo "Or use the setup script: ./scripts/setup-parameters.sh"
+          exit 1
+
+      - name: Terraform Plan
+        if: steps.check-params.outputs.params_exist == 'true'
+        timeout-minutes: 5
+        working-directory: ./terraform
+        run: terraform plan
+
+      - name: Terraform Apply
+        if: steps.check-params.outputs.params_exist == 'true' && github.ref == 'refs/heads/main'
+        timeout-minutes: 10
+        working-directory: ./terraform
+        run: terraform apply -auto-approve
+
+      - name: Get ECS Service Name from Terraform Output
+        id: get-service-name
+        if: steps.check-params.outputs.params_exist == 'true'
+        working-directory: ./terraform
+        run: |
+          ECS_SERVICE=$(terraform output -raw ecs_service_name)
+          echo "ecs_service=$ECS_SERVICE" >> $GITHUB_OUTPUT
+          echo "ECS Service Name: $ECS_SERVICE"
+
+      - name: Force deploy and wait for stability
+        timeout-minutes: 20
+        run: |
+          aws ecs update-service --cluster $ECS_CLUSTER \
+                               --service ${{ steps.get-service-name.outputs.ecs_service }} \
+                               --force-new-deployment \
+                               --region $AWS_REGION
+          
+          echo "Waiting for service to stabilize..."
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services ${{ steps.get-service-name.outputs.ecs_service }}
+
+      - name: Get ALB DNS Name
+        id: get-alb
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names ai-flashcards-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+          echo "alb_dns=$ALB_DNS" >> $GITHUB_OUTPUT
+
+      - name: Wait for Health Check
+        timeout-minutes: 5
+        run: |
+          echo "Waiting for service to be healthy..."
+          for i in {1..30}; do
+            if curl -s -f "http://${{ steps.get-alb.outputs.alb_dns }}/health"; then
+              echo "Health check succeeded"
+              echo "Health check response:"
+              curl -s "http://${{ steps.get-alb.outputs.alb_dns }}/health" | jq .
+              exit 0
+            fi
+            echo "Attempt $i: Health check failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "Health check failed after 30 attempts"
+          exit 1

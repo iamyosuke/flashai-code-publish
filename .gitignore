@@ -1,0 +1,9 @@
+git-crypt-key
+.vscode
+node_modules
+
+# Environment variables
+.env
+*.env
+!.env.example
+.vercel

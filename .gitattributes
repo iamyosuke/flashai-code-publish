@@ -1,0 +1,5 @@
+*.env filter=git-crypt diff=git-crypt
+cline_task_may-21-2025_6-42-45-pm.md filter=git-crypt diff=git-crypt
+task-definition.json filter=git-crypt diff=git-crypt
+secret/* filter=git-crypt diff=git-crypt
+*.tfvars filter=git-crypt diff=git-crypt

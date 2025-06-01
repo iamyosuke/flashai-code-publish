@@ -1,0 +1,12 @@
+{
+  "name": "ai-flashcards-backend",
+  "version": "1.0.0",
+  "description": "AI Flashcards Backend API",
+  "main": "api/index.go",
+  "scripts": {
+    "build": "echo 'No build step required for Go'"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

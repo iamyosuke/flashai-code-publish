@@ -1,0 +1,19 @@
+FROM golang:1.23-alpine
+
+WORKDIR /app
+
+# 必要なパッケージのインストール
+RUN apk add --no-cache git
+
+# airのインストール
+RUN go install github.com/air-verse/air@latest
+
+# アプリケーションの依存関係をコピー
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+
+# ソースコードをコピー
+COPY backend/ .
+
+# airを使用してアプリケーションを実行
+ENTRYPOINT ["air"]

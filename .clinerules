@@ -1,0 +1,101 @@
+# AI Flashcard Generator - Project Rules & Patterns
+
+## Project Structure
+- `memory-bank/`: プロジェクトのメモリバンク（設計・ドキュメント）
+- `frontend/`: Next.js (App Router)フロントエンド
+- `backend/`: Go (Gin)バックエンド
+- `db/`: PostgreSQLのマイグレーションファイル
+- `docker/`: Docker関連ファイル
+
+## Architectural Patterns
+1. クリーンアーキテクチャベース
+   - 依存関係は外から内へ
+   - ビジネスロジックは技術的実装から独立
+
+2. フロントエンド（Next.js）
+   - App Router採用
+   - Server Componentsを基本とし、必要な箇所のみClient Components
+   - TanStack Queryによる状態管理
+
+3. バックエンド（Go/Gin）
+   - レイヤードアーキテクチャ
+   - 各レイヤーはインターフェースで疎結合
+   - DIコンテナでの依存性注入
+
+## Coding Standards
+1. フロントエンド
+   - TypeScript strict mode
+   - ESLint + Prettier
+   - コンポーネントは機能単位で分割
+   - CSS: Tailwind CSS
+
+2. バックエンド
+   - Go標準パッケージスタイル
+   - エラーハンドリングは明示的に
+   - インターフェース駆動開発
+   - ユニットテスト必須
+
+## Database Patterns
+- GORMでのモデル定義
+- マイグレーションはバージョン管理
+- インデックス設計の重視
+- 論理削除の採用
+
+## AI Integration Patterns
+- OpenAI APIとの非同期通信
+- プロンプトのバージョン管理
+- レスポンスの検証と正規化
+- エラーハンドリングと再試行
+
+## Security Patterns
+- Clerkによる認証
+- JWTの検証
+- CORS設定
+- レート制限の実装
+- 入力バリデーション
+
+## Development Workflow
+1. 機能開発フロー
+   - ブランチ名: feature/機能名
+   - コミットプレフィックス:
+     - feat: 新機能
+     - fix: バグ修正
+     - docs: ドキュメント
+     - test: テスト
+     - refactor: リファクタリング
+
+2. デプロイフロー
+   - CI/CD: GitHub Actions
+   - 環境: 開発→ステージング→本番
+   - デプロイ先: Vercel (FE) + Railway/Fly.io (BE)
+
+## Testing Strategy
+- フロントエンド: Vitest + React Testing Library
+- バックエンド: Go標準テスト
+- E2E: Playwright
+- カバレッジ目標: 80%以上
+
+## Performance Guidelines
+- Lighthouseスコア目標:
+  - Performance: 90+
+  - Accessibility: 95+
+  - Best Practices: 95+
+  - SEO: 90+
+
+## Error Handling
+- フロントエンド: エラーバウンダリ
+- バックエンド: 構造化エラー
+- ユーザーフレンドリーなエラーメッセージ
+- ログ収集と監視
+
+## Documentation Rules
+- APIドキュメント: OpenAPI (Swagger)
+- コード: JSDoc / GoDoc
+- アーキテクチャ: C4モデル
+- 更新履歴の維持
+
+## Monitoring & Logging
+- アプリケーションログ
+- パフォーマンスメトリクス
+- エラートラッキング
+- ユーザー行動分析
